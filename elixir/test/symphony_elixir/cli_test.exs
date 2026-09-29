@@ -32,9 +32,9 @@ defmodule SymphonyElixir.CLITest do
     }
 
     assert {:error, banner} = CLI.evaluate(["WORKFLOW.md"], deps)
-    assert banner =~ "This Symphony implementation is a low key engineering preview."
-    assert banner =~ "Codex will run without any guardrails."
-    assert banner =~ "SymphonyElixir is not a supported product and is presented as-is."
+    assert banner =~ "Yardmaster is early software for trusted environments."
+    assert banner =~ "The coding agent will run without any guardrails."
+    assert banner =~ "Yardmaster is not a supported product and is presented as-is."
     assert banner =~ @ack_flag
     refute_received :file_checked
     refute_received :workflow_set

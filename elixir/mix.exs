@@ -98,14 +98,14 @@ defmodule SymphonyElixir.MixProject do
     [
       app: nil,
       main_module: SymphonyElixir.CLI,
-      name: "symphony",
-      path: "bin/symphony"
+      name: "yardmaster",
+      path: "bin/yardmaster"
     ]
   end
 
   defp releases do
     [
-      symphony: [
+      yardmaster: [
         steps: [:assemble, &Burrito.wrap/1],
         burrito: [
           targets: [

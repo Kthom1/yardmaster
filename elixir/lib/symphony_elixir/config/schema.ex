@@ -227,6 +227,31 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Acp do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    # When command is set, agent runs use this Agent Client Protocol agent instead of codex.command.
+    @primary_key false
+    embedded_schema do
+      field(:command, :string)
+      field(:session_meta, :map, default: %{})
+      field(:config_options, :map, default: %{})
+      field(:read_timeout_ms, :integer, default: 60_000)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:command, :session_meta, :config_options, :read_timeout_ms], empty_values: [])
+      |> validate_change(:command, fn :command, command ->
+        if String.trim(command) == "", do: [command: "can't be blank"], else: []
+      end)
+      |> validate_number(:read_timeout_ms, greater_than: 0)
+    end
+  end
+
   defmodule Hooks do
     @moduledoc false
     use Ecto.Schema
@@ -296,6 +321,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:acp, Acp, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
@@ -336,7 +362,7 @@ defmodule SymphonyElixir.Config.Schema do
   def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil, opts \\ []) do
     case settings.codex.turn_sandbox_policy do
       %{} = policy ->
-        {:ok, policy}
+        {:ok, resolve_workspace_git_policy(policy, workspace)}
 
       _ ->
         workspace
@@ -344,6 +370,19 @@ defmodule SymphonyElixir.Config.Schema do
         |> default_runtime_turn_sandbox_policy(opts)
     end
   end
+
+  defp resolve_workspace_git_policy(%{"writableRoots" => roots} = policy, workspace) when is_binary(workspace) do
+    # Resolved literally: the workspace's own .git contents are agent-writable and never trusted.
+    roots =
+      Enum.map(roots, fn
+        "$WORKSPACE/.git" -> Path.join(workspace, ".git")
+        root -> root
+      end)
+
+    Map.put(policy, "writableRoots", roots)
+  end
+
+  defp resolve_workspace_git_policy(policy, _workspace), do: policy
 
   @spec normalize_issue_state(String.t()) :: String.t()
   def normalize_issue_state(state_name) when is_binary(state_name) do
@@ -390,6 +429,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
+    |> cast_embed(:acp, with: &Acp.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)

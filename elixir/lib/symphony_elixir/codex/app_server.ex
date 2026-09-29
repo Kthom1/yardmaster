@@ -107,7 +107,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata
         )
 
-        case await_turn_completion(port, on_message, tool_executor, auto_approve_requests) do
+        case await_turn_completion(port, on_message, tool_executor, auto_approve_requests, {thread_id, turn_id}) do
           {:ok, result} ->
             Logger.info("Codex session completed for #{issue_context(issue)} session_id=#{session_id}")
 
@@ -365,22 +365,21 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp await_turn_completion(port, on_message, tool_executor, auto_approve_requests) do
-    receive_loop(
-      port,
-      on_message,
-      Config.settings!().codex.turn_timeout_ms,
-      "",
-      tool_executor,
-      auto_approve_requests
-    )
+  defp await_turn_completion(port, on_message, tool_executor, auto_approve_requests, expected_turn) do
+    turn_context = %{
+      expected_turn: expected_turn,
+      tool_executor: tool_executor,
+      auto_approve_requests: auto_approve_requests
+    }
+
+    receive_loop(port, on_message, Config.settings!().codex.turn_timeout_ms, "", turn_context)
   end
 
-  defp receive_loop(port, on_message, timeout_ms, pending_line, tool_executor, auto_approve_requests) do
+  defp receive_loop(port, on_message, timeout_ms, pending_line, turn_context) do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
-        handle_incoming(port, on_message, complete_line, timeout_ms, tool_executor, auto_approve_requests)
+        handle_incoming(port, on_message, complete_line, timeout_ms, turn_context)
 
       {^port, {:data, {:noeol, chunk}}} ->
         receive_loop(
@@ -388,8 +387,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           on_message,
           timeout_ms,
           pending_line <> to_string(chunk),
-          tool_executor,
-          auto_approve_requests
+          turn_context
         )
 
       {^port, {:exit_status, status}} ->
@@ -400,37 +398,24 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp handle_incoming(port, on_message, data, timeout_ms, tool_executor, auto_approve_requests) do
+  defp handle_incoming(port, on_message, data, timeout_ms, turn_context) do
     payload_string = to_string(data)
 
     case Jason.decode(payload_string) do
-      {:ok, %{"method" => "turn/completed"} = payload} ->
-        emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
-        {:ok, :turn_completed}
+      {:ok, %{"method" => method} = payload}
+      when method in ["turn/completed", "turn/failed", "turn/cancelled"] ->
+        if terminal_for_turn?(payload, turn_context.expected_turn) do
+          finish_turn(on_message, payload, payload_string, port)
+        else
+          emit_message(
+            on_message,
+            :notification,
+            %{payload: payload, raw: payload_string},
+            metadata_from_message(port, payload)
+          )
 
-      {:ok, %{"method" => "turn/failed", "params" => _} = payload} ->
-        emit_turn_event(
-          on_message,
-          :turn_failed,
-          payload,
-          payload_string,
-          port,
-          Map.get(payload, "params")
-        )
-
-        {:error, {:turn_failed, Map.get(payload, "params")}}
-
-      {:ok, %{"method" => "turn/cancelled", "params" => _} = payload} ->
-        emit_turn_event(
-          on_message,
-          :turn_cancelled,
-          payload,
-          payload_string,
-          port,
-          Map.get(payload, "params")
-        )
-
-        {:error, {:turn_cancelled, Map.get(payload, "params")}}
+          receive_loop(port, on_message, timeout_ms, "", turn_context)
+        end
 
       {:ok, %{"method" => method} = payload}
       when is_binary(method) ->
@@ -441,8 +426,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           payload_string,
           method,
           timeout_ms,
-          tool_executor,
-          auto_approve_requests
+          turn_context
         )
 
       {:ok, payload} ->
@@ -456,7 +440,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata_from_message(port, payload)
         )
 
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+        receive_loop(port, on_message, timeout_ms, "", turn_context)
 
       {:error, _reason} ->
         log_non_json_stream_line(payload_string, "turn stream")
@@ -473,7 +457,38 @@ defmodule SymphonyElixir.Codex.AppServer do
           )
         end
 
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+        receive_loop(port, on_message, timeout_ms, "", turn_context)
+    end
+  end
+
+  defp terminal_for_turn?(%{"params" => params}, {thread_id, turn_id}) do
+    case params do
+      %{"threadId" => ^thread_id, "turn" => %{"id" => ^turn_id}} -> true
+      %{"threadId" => ^thread_id, "turnId" => ^turn_id} when not is_map_key(params, "turn") -> true
+      _ -> false
+    end
+  end
+
+  defp terminal_for_turn?(_payload, _expected_turn), do: false
+
+  defp finish_turn(on_message, payload, payload_string, port) do
+    params = Map.get(payload, "params")
+
+    case {payload["method"], get_in(payload, ["params", "turn", "status"])} do
+      {"turn/completed", "completed"} ->
+        emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
+        {:ok, :turn_completed}
+
+      {method, status} when method == "turn/failed" or status == "failed" ->
+        emit_turn_event(on_message, :turn_failed, payload, payload_string, port, params)
+        {:error, {:turn_failed, params}}
+
+      {method, status} when method == "turn/cancelled" or status == "interrupted" ->
+        emit_turn_event(on_message, :turn_cancelled, payload, payload_string, port, params)
+        {:error, {:turn_cancelled, params}}
+
+      _ ->
+        {:error, {:invalid_turn_completion, params}}
     end
   end
 
@@ -497,8 +512,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          payload_string,
          method,
          timeout_ms,
-         tool_executor,
-         auto_approve_requests
+         turn_context
        ) do
     metadata = metadata_from_message(port, payload)
 
@@ -509,8 +523,8 @@ defmodule SymphonyElixir.Codex.AppServer do
            payload_string,
            on_message,
            metadata,
-           tool_executor,
-           auto_approve_requests
+           turn_context.tool_executor,
+           turn_context.auto_approve_requests
          ) do
       :input_required ->
         emit_message(
@@ -523,7 +537,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:error, {:turn_input_required, payload}}
 
       :approved ->
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+        receive_loop(port, on_message, timeout_ms, "", turn_context)
 
       :approval_required ->
         emit_message(
@@ -557,7 +571,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           )
 
           Logger.debug("Codex notification: #{inspect(method)}")
-          receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+          receive_loop(port, on_message, timeout_ms, "", turn_context)
         end
     end
   end

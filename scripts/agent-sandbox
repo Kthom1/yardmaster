@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Runs an agent with the host read-only, except the task checkout (the working
+# directory), /tmp and explicit --writable paths. Network access is kept.
+usage() { echo 'Usage: agent-sandbox [--writable ABSOLUTE_PATH]... -- COMMAND [ARG]...' >&2; exit 2; }
+command -v bwrap >/dev/null || { echo 'agent-sandbox requires bubblewrap (bwrap).' >&2; exit 1; }
+checkout=$(pwd -P)
+case $checkout in
+  / | "$HOME" | "$(cd "$HOME" && pwd -P)") echo 'Run agent-sandbox from a task checkout.' >&2; exit 1 ;;
+esac
+binds=(--bind "$checkout" "$checkout" --bind /tmp /tmp)
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --writable)
+      [[ ${2:-} = /* ]] || { echo 'Writable paths must be absolute.' >&2; exit 1; }
+      binds+=(--bind "$2" "$2")
+      shift 2
+      ;;
+    --) shift; break ;;
+    *) usage ;;
+  esac
+done
+[[ $# -gt 0 ]] || usage
+exec bwrap --ro-bind / / --dev /dev --proc /proc "${binds[@]}" \
+  --unshare-pid --die-with-parent --new-session -- "$@"

@@ -1,41 +1,36 @@
-# Symphony
+# Yardmaster
 
-Symphony turns project work into isolated, autonomous implementation runs, allowing teams to manage
-work instead of supervising coding agents.
+Yardmaster turns work items on a task board into isolated, unattended coding-agent runs. It polls
+a tracker, gives each eligible work item its own workspace, runs a coding agent there, retries
+failed runs and serves a live dashboard. The work item stays the source of truth; the agent reports
+progress and hands the result back for review.
 
-[![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](https://player.vimeo.com/video/1186371009?h=5626e4b899)
+Yardmaster is a modified version of [OpenAI Symphony](https://github.com/openai/symphony). It keeps
+Symphony's [specification](SPEC.md), workflow format and trackers, and adds:
 
-_In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher level._
+- **Any Agent Client Protocol agent.** Run Codex, or set `acp.command` to run an
+  [ACP](https://agentclientprotocol.com) agent such as Claude Code. Tracker tools reach every agent
+  the same way, and tracker credentials never enter the agent's environment.
+- **An agent sandbox.** `scripts/agent-sandbox` runs any agent with the host read-only except its
+  workspace, `/tmp` and paths you name.
+- **A Plane tracker** with project-to-repository mappings and blocking-relation gating.
+- **Reliability fixes**: turn-event correlation, task-specific Git directories in sandbox policies,
+  and patched dependency versions.
 
 > [!WARNING]
-> Symphony is a low-key engineering preview for testing in trusted environments.
+> Yardmaster is early software for trusted environments. Agents run unattended with your user's
+> permissions and network access. Use trusted repositories and work-item authors.
 
-## Running Symphony
+## Get started
 
-### Requirements
+See [elixir/README.md](elixir/README.md) for requirements, configuration and running the service.
+[Agent Client Protocol agents](elixir/README.md#agent-client-protocol-agents) covers Claude Code and
+other ACP agents.
 
-Symphony works best in codebases that have adopted
-[harness engineering](https://openai.com/index/harness-engineering/). Symphony is the next step --
-moving from managing coding agents to managing work that needs to get done.
-
-### Option 1. Make your own
-
-Tell your favorite coding agent to build Symphony in a programming language of your choice:
-
-> Implement Symphony according to the following spec:
-> https://github.com/openai/symphony/blob/main/SPEC.md
-
-### Option 2. Use our experimental reference implementation
-
-Check out [elixir/README.md](elixir/README.md) for instructions on how to set up your environment
-and run the Elixir-based Symphony implementation. You can also ask your favorite coding agent to
-help with the setup:
-
-> Set up Symphony for my repository based on
-> https://github.com/openai/symphony/blob/main/elixir/README.md
-
----
+The Elixir application keeps its upstream module names (`SymphonyElixir`) so upstream changes stay
+easy to merge. The executable is `yardmaster`.
 
 ## License
 
-This project is licensed under the [Apache License 2.0](LICENSE).
+Yardmaster is licensed under the [Apache License 2.0](LICENSE). It includes OpenAI Symphony,
+copyright 2025 OpenAI; see [NOTICE](NOTICE).

@@ -1,4 +1,4 @@
-# Symphony Elixir
+# Yardmaster (Elixir)
 
 This directory contains the current Elixir/OTP implementation of Symphony, based on
 [`SPEC.md`](../SPEC.md) at the repository root.
@@ -65,20 +65,21 @@ mise exec -- elixir --version
 ## Run
 
 ```bash
-git clone https://github.com/openai/symphony
-cd symphony/elixir
+git clone https://github.com/Kthom1/yardmaster
+cd yardmaster/elixir
 mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+mise exec -- ./bin/yardmaster ./WORKFLOW.md
 ```
 
 ## Burrito releases
 
-Symphony ships self-contained executables built with
-[Burrito](https://github.com/burrito-elixir/burrito). They embed Erlang/OTP, Elixir, and Symphony,
-but still expect `codex`, `git`, and the selected tracker credentials on the target machine.
+Yardmaster ships self-contained executables built with
+[Burrito](https://github.com/burrito-elixir/burrito). They embed Erlang/OTP, Elixir, and
+Yardmaster, but still expect `git`, the coding agent (`codex` or an ACP agent), and the selected
+tracker credentials on the target machine.
 
 Supported release targets:
 
@@ -93,16 +94,16 @@ artifacts without creating a release.
 After downloading the executable for your platform from a release:
 
 ```bash
-chmod +x ./symphony-v0.0.1-macos_arm64
-./symphony-v0.0.1-macos_arm64 ./WORKFLOW.md
+chmod +x ./yardmaster-v0.0.1-macos_arm64
+./yardmaster-v0.0.1-macos_arm64 ./WORKFLOW.md
 ```
 
 ## Configuration
 
-Pass a custom workflow file path to `./bin/symphony` when starting the service:
+Pass a custom workflow file path to `./bin/yardmaster` when starting the service:
 
 ```bash
-./bin/symphony /path/to/custom/WORKFLOW.md
+./bin/yardmaster /path/to/custom/WORKFLOW.md
 ```
 
 If no path is passed, Symphony defaults to `./WORKFLOW.md`.
@@ -160,6 +161,10 @@ Notes:
 - When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
   unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
   Symphony validation.
+- A `$WORKSPACE/.git` entry in `codex.turn_sandbox_policy.writableRoots` resolves to the issue
+  workspace's `.git` path so the agent can commit. It is never resolved through the workspace's own
+  `.git` file; for `git worktree` checkouts, list the repository's Git directories as explicit
+  writable roots.
 - Workflows that run package managers or other commands that resolve external hosts should set
   `networkAccess: true` in `codex.turn_sandbox_policy`; otherwise DNS/network access may be denied
   by the Codex turn sandbox.
@@ -199,6 +204,60 @@ codex:
   reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+
+### Agent Client Protocol agents
+
+Setting `acp.command` runs an [Agent Client Protocol](https://agentclientprotocol.com) (ACP v1)
+agent instead of `codex.command`, for example Claude Code through its ACP adapter. Remove the
+`acp` block to return to Codex. The orchestrator, retries, workspaces and dashboard are unchanged.
+
+- `acp.command` is a shell command started in the issue workspace. Tracker secret variables are
+  removed from its environment.
+- `acp.session_meta` is sent as `_meta` on `session/new`; its meaning is agent-specific.
+- `acp.config_options` sets session options such as the mode through `session/set_config_option`.
+- `acp.read_timeout_ms` limits start-up requests (default `60000`). `codex.turn_timeout_ms` and
+  `codex.stall_timeout_ms` apply to every agent.
+- Tracker tools reach the agent as a stdio MCP server that relays calls back
+  to Symphony over a private Unix socket, so tracker credentials stay in Symphony. Each relay must
+  present its session's random token, so an agent cannot use another session's socket.
+  The relay runs on the host's `python3`; a session fails before starting the agent without it.
+  Each turn binds tool calls to that turn's refreshed work item.
+- Runs are unattended: permission requests are answered with the agent's allow-once option, or
+  cancelled when there is none, and no rule is saved. The client advertises no filesystem, terminal
+  or elicitation capabilities. The agent's stderr is kept out of the protocol stream.
+- ACP defines no sandbox. `scripts/agent-sandbox` runs any agent with the host read-only except the
+  issue workspace, `/tmp` and `--writable` paths. It requires bubblewrap and unprivileged user
+  namespaces. Network access is kept.
+- ACP agents run on the local host only; SSH worker hosts support Codex.
+- Token totals come from usage reported when a turn finishes. The worker is usually stopped as soon
+  as the issue leaves an active state, before that report, so totals are often missing.
+
+For Claude Code, install the pinned adapter and sign in with a dedicated configuration directory:
+
+```bash
+npm install --prefix ~/.local/share/yardmaster/acp @agentclientprotocol/claude-agent-acp@0.84.0
+CLAUDE_CONFIG_DIR=~/.local/share/yardmaster/claude \
+  ~/.local/share/yardmaster/acp/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude auth login
+```
+
+```yaml
+acp:
+  command: >-
+    CLAUDE_CONFIG_DIR="$HOME/.local/share/yardmaster/claude"
+    "$YARDMASTER_ROOT/scripts/agent-sandbox" --writable "$HOME/.local/share/yardmaster/claude"
+    -- "$HOME/.local/share/yardmaster/acp/node_modules/.bin/claude-agent-acp"
+  session_meta:
+    claudeCode:
+      options:
+        settingSources: [project]
+        strictMcpConfig: true
+  config_options:
+    mode: bypassPermissions
+```
+
+Set `YARDMASTER_ROOT` to your checkout of this repository. `settingSources: [project]` loads the repository's `CLAUDE.md` and `.claude/settings.json` but not
+user settings, `strictMcpConfig` ignores MCP servers from configuration files, and
+`bypassPermissions` skips prompts while the sandbox limits where the agent can write.
 
 ### Linear adapter profile
 
@@ -286,6 +345,22 @@ codex:
 - Symphony reads project issues by IID and exposes route-safe `GL-<iid>` identifiers.
 - `gitlab_api` forwards raw GitLab REST requests with host-side auth and keeps configured tracker
   credentials and provider authentication aliases out of the Codex child.
+
+### Plane adapter
+
+- Configure `tracker.kind: plane` with `tracker.provider.endpoint`, `workspace` (the URL slug),
+  `api_key` as a `$VAR` reference (`PLANE_API_KEY` is also kept out of the agent), and either
+  `project_id` plus `project_identifier`, or a `projects` list of `project_id`,
+  `project_identifier` and `repo` mappings. Optional `web_url` sets the browser address used in
+  issue links. `tracker.active_states` and `tracker.terminal_states` are required because Plane
+  state names are workspace-defined, for example `[Todo, In Progress]` and `[Done, Cancelled]`.
+  The adapter's workflow uses the states `Todo` (the queue, which `active_states` must include),
+  `In Progress`, `Human Review` and `Blocked`.
+  Project UUIDs match in any case.
+- Each work item carries its project and, for mapped projects, its repository in `native_ref`.
+  Work items with unresolved blocking relations are held until their blockers finish.
+- The `plane` agent tool reads a work item and its comments, posts comments, and moves the assigned
+  work item to `In Progress`, `Human Review` or `Blocked`. Writes are refused for any other work item.
 
 ## Web dashboard
 
